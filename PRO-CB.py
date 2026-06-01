@@ -1,70 +1,12 @@
 import streamlit as st
-import re
-import nltk
 
-from nltk.corpus import stopwords
-from nltk.stem import WordNetLemmatizer
-
-from transformers import pipeline
-
-# ==========================================
-# DOWNLOAD NLTK
-# ==========================================
-
-nltk.download('stopwords')
-nltk.download('wordnet')
-
-# ==========================================
-# TEXT PREPROCESSING
-# ==========================================
-
-stop_words = set(stopwords.words('english'))
-
-lemmatizer = WordNetLemmatizer()
-
-def clean_text(text):
-
-    text = str(text)
-
-    text = text.lower()
-
-    # Remove URLs
-    text = re.sub(r"http\S+", "", text)
-
-    # Remove special characters
-    text = re.sub(r"[^a-zA-Z]", " ", text)
-
-    # Tokenization
-    words = text.split()
-
-    # Remove stopwords
-    words = [
-        lemmatizer.lemmatize(word)
-        for word in words
-        if word not in stop_words
-    ]
-
-    return " ".join(words)
-
-# ==========================================
-# LOAD PRETRAINED MODEL
-# ==========================================
+from detector import analyze_text, format_scores, load_classifier
 
 @st.cache_resource
 def load_model():
-
-    classifier = pipeline(
-        "text-classification",
-        model="unitary/toxic-bert"
-    )
-
-    return classifier
+    return load_classifier()
 
 classifier = load_model()
-
-# ==========================================
-# STREAMLIT UI
-# ==========================================
 
 st.set_page_config(
     page_title="Cyberbullying Detection",
@@ -74,43 +16,51 @@ st.set_page_config(
 st.title("Cyberbullying Detection using Toxic-BERT")
 
 st.write(
-    "Detect toxic and cyberbullying text using a pretrained Hugging Face model."
+    "Detect toxic or cyberbullying text with scored Toxic-BERT categories."
 )
-
-# ==========================================
-# USER INPUT
-# ==========================================
 
 user_text = st.text_area(
     "Enter Text",
     height=150
 )
 
-# ==========================================
-# PREDICTION
-# ==========================================
+threshold = st.slider(
+    "Detection Threshold",
+    min_value=0.10,
+    max_value=0.95,
+    value=0.50,
+    step=0.05
+)
 
 if st.button("Analyze Text"):
-
     if user_text.strip() == "":
-
         st.warning("Please enter text")
-
     else:
+        st.stop()
 
-        # Clean text
-        cleaned_text = clean_text(user_text)
+    with st.spinner("Analyzing text..."):
+        result = analyze_text(user_text, classifier, threshold)
 
-        # Prediction
-        result = classifier(cleaned_text)
+    if result.is_cyberbullying:
+        st.error("Cyberbullying / Toxic Content Detected")
+    else:
+        st.success("Safe Text")
 
-        label = result[0]['label']
-        score = result[0]['score']
+    col1, col2, col3 = st.columns(3)
+    col1.metric("Top Toxic Label", result.top_label)
+    col2.metric("Confidence", f"{result.top_score * 100:.2f}%")
+    col3.metric("Severity", result.severity)
 
-        # ==================================
-        # DISPLAY RESULT
-        # ==================================
+    if result.cleaned_text:
+        st.subheader("Cleaned Text")
+        st.write(result.cleaned_text)
 
+    if result.matched_labels:
+        st.subheader("Matched Toxic Categories")
+        st.dataframe(format_scores(result.matched_labels), use_container_width=True)
+
+    with st.expander("All Model Scores"):
+        st.dataframe(format_scores(result.all_scores), use_container_width=True)
         st.subheader("Prediction Result")
 
         st.write(f"Label: {label}")

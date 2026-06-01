@@ -1,86 +1,21 @@
-import streamlit as st
-import re
-import nltk
 import easyocr
 import numpy as np
+import streamlit as st
 from PIL import Image
 
-from nltk.corpus import stopwords
-from nltk.stem import WordNetLemmatizer
-
-from transformers import pipeline
-
-# ==========================================
-# DOWNLOAD NLTK
-# ==========================================
-
-nltk.download('stopwords')
-nltk.download('wordnet')
-
-# ==========================================
-# TEXT PREPROCESSING
-# ==========================================
-
-stop_words = set(stopwords.words('english'))
-
-lemmatizer = WordNetLemmatizer()
-
-def clean_text(text):
-
-    text = str(text)
-
-    text = text.lower()
-
-    # Remove URLs
-    text = re.sub(r"http\S+", "", text)
-
-    # Remove special characters
-    text = re.sub(r"[^a-zA-Z]", " ", text)
-
-    # Tokenization
-    words = text.split()
-
-    # Remove stopwords
-    words = [
-        lemmatizer.lemmatize(word)
-        for word in words
-        if word not in stop_words
-    ]
-
-    return " ".join(words)
-
-# ==========================================
-# LOAD TOXIC-BERT MODEL
-# ==========================================
+from detector import analyze_text, format_scores, load_classifier
 
 @st.cache_resource
 def load_model():
-
-    classifier = pipeline(
-        "text-classification",
-        model="unitary/toxic-bert"
-    )
-
-    return classifier
+    return load_classifier()
 
 classifier = load_model()
 
-# ==========================================
-# LOAD EASYOCR
-# ==========================================
-
 @st.cache_resource
 def load_ocr():
-
-    reader = easyocr.Reader(['en'])
-
-    return reader
+    return easyocr.Reader(["en"])
 
 reader = load_ocr()
-
-# ==========================================
-# STREAMLIT PAGE
-# ==========================================
 
 st.set_page_config(
     page_title="Cyberbullying Detection",
@@ -90,12 +25,8 @@ st.set_page_config(
 st.title("Cyberbullying Detection using Toxic-BERT + EasyOCR")
 
 st.write(
-    "Detect toxic and cyberbullying text from typed text or uploaded images."
+    "Detect toxic or cyberbullying text from typed text or uploaded images."
 )
-
-# ==========================================
-# TEXT INPUT
-# ==========================================
 
 st.subheader("1. Manual Text Input")
 
@@ -104,25 +35,16 @@ user_text = st.text_area(
     height=150
 )
 
-# ==========================================
-# IMAGE INPUT
-# ==========================================
-
 st.subheader("2. Upload Image for OCR")
 
 uploaded_image = st.file_uploader(
     "Upload Image",
-    type=['png', 'jpg', 'jpeg']
+    type=["png", "jpg", "jpeg"]
 )
 
 ocr_text = ""
 
-# ==========================================
-# OCR PROCESSING
-# ==========================================
-
 if uploaded_image is not None:
-
     image = Image.open(uploaded_image)
 
     st.image(image, caption="Uploaded Image", use_container_width=True)
@@ -130,75 +52,57 @@ if uploaded_image is not None:
     image_np = np.array(image)
 
     with st.spinner("Extracting text using EasyOCR..."):
-
-        result = reader.readtext(image_np)
-
-        extracted_texts = [text[1] for text in result]
-
+        ocr_result = reader.readtext(image_np)
+        extracted_texts = [item[1] for item in ocr_result]
         ocr_text = " ".join(extracted_texts)
 
     st.subheader("Extracted OCR Text")
+    st.write(ocr_text if ocr_text else "No readable text found in this image.")
 
-    st.write(ocr_text)
+input_source = st.radio(
+    "Analyze Source",
+    ["OCR text if available", "Manual text"],
+    horizontal=True
+)
 
-# ==========================================
-# SELECT INPUT SOURCE
-# ==========================================
+threshold = st.slider(
+    "Detection Threshold",
+    min_value=0.10,
+    max_value=0.95,
+    value=0.50,
+    step=0.05
+)
 
-final_text = ""
-
-if ocr_text.strip() != "":
+if input_source == "OCR text if available" and ocr_text.strip():
     final_text = ocr_text
 else:
     final_text = user_text
 
-# ==========================================
-# PREDICTION
-# ==========================================
-
 if st.button("Analyze Text"):
-
     if final_text.strip() == "":
-
         st.warning("Please enter text or upload image")
+        st.stop()
 
+    with st.spinner("Analyzing text..."):
+        result = analyze_text(final_text, classifier, threshold)
+
+    if result.is_cyberbullying:
+        st.error("Cyberbullying / Toxic Content Detected")
     else:
+        st.success("Safe Text")
 
-        # Clean text
-        cleaned_text = clean_text(final_text)
+    col1, col2, col3 = st.columns(3)
+    col1.metric("Top Toxic Label", result.top_label)
+    col2.metric("Confidence", f"{result.top_score * 100:.2f}%")
+    col3.metric("Severity", result.severity)
 
-        # Prediction
-        result = classifier(cleaned_text)
+    if result.cleaned_text:
+        st.subheader("Cleaned Text")
+        st.write(result.cleaned_text)
 
-        label = result[0]['label']
-        score = result[0]['score']
+    if result.matched_labels:
+        st.subheader("Matched Toxic Categories")
+        st.dataframe(format_scores(result.matched_labels), use_container_width=True)
 
-        # ==================================
-        # DISPLAY RESULT
-        # ==================================
-
-        st.subheader("Prediction Result")
-
-        st.write(f"Label: {label}")
-
-        st.write(f"Confidence Score: {score:.2f}")
-
-        # ==================================
-        # ALERTS
-        # ==================================
-
-        toxic_labels = [
-            "toxic",
-            "insult",
-            "identity_hate",
-            "threat",
-            "obscene"
-        ]
-
-        if label.lower() in toxic_labels:
-
-            st.error("Cyberbullying / Toxic Content Detected")
-
-        else:
-
-            st.success("Safe Text")
+    with st.expander("All Model Scores"):
+        st.dataframe(format_scores(result.all_scores), use_container_width=True)
