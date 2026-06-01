@@ -1,0 +1,7 @@
+streamlit
+nltk
+transformers
+torch
+easyocr
+numpy
+Pillow
